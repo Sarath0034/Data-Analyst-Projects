@@ -26,6 +26,12 @@ The Power BI folder includes dashboard projects for banking, COVID-19, email mar
 
 Project folder: [Power-BI](Power-BI)
 
+### Tableau Projects
+
+The Tableau folder includes packaged workbook dashboards for Airbnb, COVID-19, Goodreads, healthcare, housing, LinkedIn jobs, Netflix, Play Store, rainfall, sales, airport analytics, Tamil cinema, and UEFA Champions League analysis.
+
+Project folder: [Tableau](Tableau)
+
 ### SQL: Data Job Market Analysis
 
 This project analyzes the 2023 data job market using SQL. It explores high-paying Data Analyst roles, required skills, in-demand tools, salary trends, and the best skills to learn based on both demand and salary.
