@@ -20,6 +20,12 @@ The Excel folder includes sales, call center, stock, and store analysis workbook
 
 Project folder: [Excel](Excel)
 
+### Power BI Projects
+
+The Power BI folder includes dashboard projects for banking, COVID-19, email marketing, terrorism analysis, HR analytics, IPL, Maven Market, Olympics, sales and inventory, and unemployment analysis.
+
+Project folder: [Power-BI](Power-BI)
+
 ### SQL: Data Job Market Analysis
 
 This project analyzes the 2023 data job market using SQL. It explores high-paying Data Analyst roles, required skills, in-demand tools, salary trends, and the best skills to learn based on both demand and salary.
