@@ -14,6 +14,12 @@ Welcome to my Data Analyst portfolio. This repository contains practical project
 
 ## Featured Project
 
+### Excel Projects
+
+The Excel folder includes sales, call center, stock, and store analysis workbooks with dashboards and reporting examples.
+
+Project folder: [Excel](Excel)
+
 ### SQL: Data Job Market Analysis
 
 This project analyzes the 2023 data job market using SQL. It explores high-paying Data Analyst roles, required skills, in-demand tools, salary trends, and the best skills to learn based on both demand and salary.
