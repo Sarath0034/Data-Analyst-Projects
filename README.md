@@ -40,9 +40,9 @@ Project folder: [Python](Python)
 
 ### SQL: Data Job Market Analysis
 
-This project analyzes the 2023 data job market using SQL. It explores high-paying Data Analyst roles, required skills, in-demand tools, salary trends, and the best skills to learn based on both demand and salary.
+The SQL folder includes projects for data job market analysis, Zomato restaurant data analysis, a library management system, and US household income analysis.
 
-Project folder: [SQL/Data-Job-Market-Analysis](SQL/Data-Job-Market-Analysis)
+Project folder: [SQL](SQL)
 
 ## Skills Demonstrated
 
