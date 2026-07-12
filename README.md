@@ -32,6 +32,12 @@ The Tableau folder includes packaged workbook dashboards for Airbnb, COVID-19, G
 
 Project folder: [Tableau](Tableau)
 
+### Python Projects
+
+The Python folder includes a Blinkit analysis notebook plus Python practice notebooks for quiz logic, Tic-Tac-Toe, and Tkinter GUI basics.
+
+Project folder: [Python](Python)
+
 ### SQL: Data Job Market Analysis
 
 This project analyzes the 2023 data job market using SQL. It explores high-paying Data Analyst roles, required skills, in-demand tools, salary trends, and the best skills to learn based on both demand and salary.
