@@ -15,6 +15,7 @@ Each project includes one or more Power BI report files (`.pbix`) along with sup
 | IBM Employees | [Projects/IBM Employees](Projects/IBM%20Employees) | HR analytics project using IBM employee data to explore workforce patterns and employee-related metrics. |
 | IPL Analysis | [Projects/IPL](Projects/IPL) | Sports analytics project using IPL match and delivery data to analyze teams, matches, players, and performance trends. |
 | Maven Market Analysis | [Projects/Mavans](Projects/Mavans) | Retail/business analysis project using Maven Market datasets for sales, customers, products, stores, regions, and returns. |
+| Nifty 500 Dashboard | [Projects/Nifty-500-Dashboard](Projects/Nifty-500-Dashboard) | Financial analytics dashboard for Nifty 500 companies, covering EPS, net profit, operating profit, taxes, TTM profit, KPIs, and revenue distribution. |
 | Olympics Analysis | [Projects/Olympics+Dataset+Files](Projects/Olympics+Dataset+Files) | Olympics dataset dashboard project analyzing event, medal, athlete, and country-level trends. |
 | Sales and Inventory Analysis | [Projects/Sales+and+inventory+analysis+files](Projects/Sales+and+inventory+analysis+files) | Business dashboard project focused on fruit sales, inventory tracking, and operational reporting. |
 | Unemployment Data Analysis | [Projects/Unemployment+Data+Analysis](Projects/Unemployment+Data+Analysis) | Labor market analysis project using unemployment statistics to identify long-term unemployment trends. |

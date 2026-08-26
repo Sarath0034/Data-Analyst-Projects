@@ -22,7 +22,7 @@ Project folder: [Excel](Excel)
 
 ### Power BI Projects
 
-The Power BI folder includes dashboard projects for banking, COVID-19, email marketing, terrorism analysis, HR analytics, IPL, Maven Market, Olympics, sales and inventory, and unemployment analysis.
+The Power BI folder includes dashboard projects for banking, COVID-19, email marketing, terrorism analysis, HR analytics, IPL, Maven Market, Nifty 500 financial analytics, Olympics, sales and inventory, and unemployment analysis.
 
 Project folder: [Power-BI](Power-BI)
 
