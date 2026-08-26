@@ -16,7 +16,7 @@ Welcome to my Data Analyst portfolio. This repository contains practical project
 
 ### Excel Projects
 
-The Excel folder includes sales, call center, stock, and store analysis workbooks with dashboards and reporting examples.
+The Excel folder includes sales, call center, stock performance, and store analysis workbooks with dashboards and reporting examples.
 
 Project folder: [Excel](Excel)
 

@@ -10,6 +10,7 @@ This folder contains Excel-based data analysis and dashboard projects.
 | Call Center Analysis | [Call Center.xlsx](Call%20Center.xlsx) |
 | MacDonald Sales Analysis Dashboard | [MacDonald Sales Analysis Dashboard.xlsx](MacDonald%20Sales%20Analysis%20Dashboard.xlsx) |
 | Stock Analysis | [Stock.xlsx](Stock.xlsx) |
+| Stock Performance Analysis Dashboard | [Stock-Performance-Analysis-Dashboard](Stock-Performance-Analysis-Dashboard) |
 | Store Data Analysis | [Store Data Analysis Excel.xlsx](Store%20Data%20Analysis%20Excel.xlsx) |
 
 ## Skills Demonstrated
@@ -19,3 +20,5 @@ This folder contains Excel-based data analysis and dashboard projects.
 - Dashboard creation
 - Sales and operations analysis
 - Excel reporting
+- Financial data visualization
+- Dynamic dashboard design
