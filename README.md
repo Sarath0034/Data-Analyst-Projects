@@ -40,7 +40,7 @@ Project folder: [Python](Python)
 
 ### SQL: Data Job Market Analysis
 
-The SQL folder includes projects for data job market analysis, Zomato restaurant data analysis, a library management system, and US household income analysis.
+The SQL folder includes projects for data job market analysis, Zomato restaurant data analysis, a library management system, US household income analysis, and multiple database case study projects.
 
 Project folder: [SQL](SQL)
 
