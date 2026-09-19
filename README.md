@@ -1,6 +1,6 @@
 # Data Analyst Projects
 
-Welcome to my Data Analyst portfolio. This repository contains practical projects organized by tool and skill area: SQL, Excel, Power BI, Tableau, and Python.
+Welcome to my Data Analyst portfolio. This repository contains practical projects organized by tool and skill area: SQL, Excel, Power BI, Tableau, Python, and end-to-end analytics.
 
 ## Project Categories
 
@@ -11,8 +11,17 @@ Welcome to my Data Analyst portfolio. This repository contains practical project
 | Power BI | Interactive dashboards and business intelligence projects. |
 | Tableau | Data visualization and dashboard projects. |
 | Python | Data cleaning, exploration, visualization, and analysis projects. |
+| End-to-End Projects | Complete analytics workflows using multiple tools from data collection to dashboarding. |
 
 ## Featured Project
+
+### End-to-End Data Analytics Projects
+
+The End-to-End Projects folder includes complete analytics workflows that combine Python, SQL, Power BI, Tableau, and visualization libraries.
+
+Featured project: [Crypto Market Analytics Dashboard](End-to-End-Projects/Crypto-Market-Analytics-Dashboard)
+
+Project folder: [End-to-End-Projects](End-to-End-Projects)
 
 ### Excel Projects
 
@@ -52,9 +61,10 @@ Project folder: [SQL](SQL)
 - Salary and demand analysis
 - Data-driven business insights
 - Portfolio project organization
+- End-to-end analytics workflows
 
 ## About Me
 
-I am Sarath0034, an aspiring Data Analyst building projects with SQL, Excel, Power BI, Tableau, and Python.
+I am Sarath0034, an aspiring Data Analyst building projects with SQL, Excel, Power BI, Tableau, Python, and end-to-end analytics workflows.
 
 GitHub: <https://github.com/Sarath0034>
