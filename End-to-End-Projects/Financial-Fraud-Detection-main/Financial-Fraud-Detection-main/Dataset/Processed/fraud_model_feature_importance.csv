@@ -1,0 +1,14 @@
+feature,importance
+behavioural_risk_score,0.3742
+risk_score,0.2376
+is_digital,0.1333
+is_international,0.0827
+amount,0.0493
+amount_z_score,0.0486
+is_atm,0.0357
+is_amount_anomaly,0.0189
+minutes_since_previous_transaction,0.01
+is_high_value,0.009
+is_weekend,0.0007
+transaction_count_24h,0.0002
+is_rapid_transaction,0.0
