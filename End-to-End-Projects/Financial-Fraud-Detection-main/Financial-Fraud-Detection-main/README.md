@@ -507,7 +507,7 @@ The result is a practical fraud analytics solution that moves from raw transacti
 
 ## Author
 
-**Keerthi Shrinivas Mungal**
+**Sarath**
 
 Data Analyst | Data Science | Machine Learning | Business Intelligence
 
