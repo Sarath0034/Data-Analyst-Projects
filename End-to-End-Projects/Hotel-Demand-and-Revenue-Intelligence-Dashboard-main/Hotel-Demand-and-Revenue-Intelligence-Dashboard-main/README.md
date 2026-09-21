@@ -408,7 +408,7 @@ The forecast indicates that **City Hotel is expected to experience higher bookin
 
 ## Author
 
-**Pranjali Sus**
+**Sarath**
 
 Aspiring Data Analyst | Business Intelligence | Power BI | Tableau | SQL | Python
 
