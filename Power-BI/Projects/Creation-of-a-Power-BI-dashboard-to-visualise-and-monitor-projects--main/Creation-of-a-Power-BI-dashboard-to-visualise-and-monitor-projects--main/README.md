@@ -12,7 +12,7 @@
 **Microsoft PowerPoint**: for the final presentation of results
 
 # I. Context
-I carried out a data visualisation consulting mission for Sanitorial, an international company that develops and sells oral care products.
+
 
 The company required a dynamic dashboard to track the progress of ongoing projects, identify delays, and monitor performance. The goal was to provide clear, actionable insights to help teams take appropriate corrective measures when needed.
 
