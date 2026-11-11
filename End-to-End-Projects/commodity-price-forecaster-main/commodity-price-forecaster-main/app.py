@@ -1,0 +1,919 @@
+"""Streamlit dashboard for commodity futures forecasts.
+
+ARIMA, Prophet, and an LSTM, with baseline validation, a weather chart,
+and a producer table. Educational only; not financial advice.
+"""
+
+import logging
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import warnings
+
+warnings.filterwarnings("ignore")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+st.set_page_config(
+    page_title="Commodity Price Forecaster",
+    page_icon="🛢️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    .stApp { background: #0B1120; }
+    .block-container {
+        max-width: 1450px;
+        padding-top: 1.4rem;
+        padding-bottom: 3rem;
+    }
+    div[data-testid="stMetric"] {
+        background: #111827;
+        border: 1px solid #1F2937;
+        border-radius: 15px;
+        padding: .85rem 1rem;
+        box-shadow: none;
+    }
+    section[data-testid="stSidebar"] {
+        background: #0F172A;
+        border-right: 1px solid #1F2937;
+    }
+    .commodity-hero {
+        padding: 1.85rem 2.1rem;
+        border-radius: 22px;
+        background:
+            radial-gradient(circle at 88% 10%, rgba(16,185,129,.22), transparent 30%),
+            linear-gradient(135deg, #0B1120 0%, #111827 60%, #10B981 160%);
+        color: white;
+        border: 1px solid #1F2937;
+        margin-bottom: 1rem;
+    }
+    .commodity-hero small {
+        color: #10B981;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+        font-weight: 750;
+    }
+    .commodity-hero h1 {
+        margin: .45rem 0 0;
+        font-size: 2.2rem;
+        letter-spacing: -.03em;
+    }
+    .commodity-hero p {
+        color: #DCE7F4;
+        margin: .75rem 0 0;
+        max-width: 880px;
+        line-height: 1.6;
+    }
+    /* Narrow screens (< 1024px): let metric/column rows wrap instead of squeezing
+       five KPI cards until their values truncate. */
+    @media (max-width: 1024px) {
+        .block-container { padding-left: 1rem; padding-right: 1rem; }
+        div[data-testid="stHorizontalBlock"] { flex-wrap: wrap; row-gap: .75rem; }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            min-width: calc(33.333% - 1rem) !important;
+            flex: 1 1 calc(33.333% - 1rem) !important;
+        }
+        div[data-testid="stMetricValue"] { font-size: 1.55rem; }
+        .commodity-hero { padding: 1.3rem 1.3rem; }
+        .commodity-hero h1 { font-size: 1.6rem; }
+    }
+    @media (max-width: 640px) {
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            min-width: calc(50% - 1rem) !important;
+            flex: 1 1 calc(50% - 1rem) !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+from src.data_loader import (
+    fetch_commodity_prices,
+    fetch_weather_data,
+    simulate_weather_data,
+)
+from src.forecaster import (
+    fit_best_arima,
+    fit_prophet,
+    decompose_series,
+    decomposition_strength,
+    apply_price_scenario,
+    forecast_export_frame,
+)
+from src.formatting import format_directional_accuracy, format_mape
+from src.market import trailing_high_low, weekly_last, weather_price_frame
+from src.validation import rolling_origin_baseline_backtest
+from src.backtester import arima_model_fn, walk_forward_backtest
+from src.correlation import (
+    align_weekly,
+    normalized,
+    return_correlation,
+    rolling_correlation,
+    spread_bands,
+)
+from src.data_loader import fetch_many
+from src.ticker import banner_html, fetch_quotes
+from src.lstm_forecaster import fit_lstm
+from src.usda_loader import AG_TICKERS, load_cache, yield_releases
+from src.reports import predictions_csv, validation_report_markdown
+from src.utils import (
+    plot_forecast,
+    plot_decomposition,
+    plot_weather_overlay,
+    risk_heatmap,
+    compute_risk_scores,
+)
+
+# Sidebar
+with st.sidebar:
+    st.markdown("## 🛢️ Commodity Forecaster")
+    st.markdown("---")
+
+    from src.market import COMMODITIES
+
+    commodity_name = st.selectbox("Select Commodity", list(COMMODITIES.keys()))
+    commodity_ticker = COMMODITIES[commodity_name]
+    live_ticker = st.toggle(
+        "🔴 Live Ticker", value=False,
+        help="Refreshes every 60 s with delayed Yahoo Finance quotes for all commodities.",
+    )
+    compare_names = st.multiselect(
+        "Compare with (Correlations tab)",
+        [n for n in COMMODITIES if n != commodity_name],
+        default=[],
+        help="Pick one or more commodities to compare against the selected one.",
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date",
+                                   value=pd.Timestamp("2020-01-01"))
+    with col2:
+        end_date = st.date_input("End Date",
+                                 value=pd.Timestamp("2024-12-31"))
+
+    st.markdown("---")
+    st.subheader("🔮 Forecast Settings")
+
+    model_choice = st.selectbox("Model", ["Auto-ARIMA", "Prophet",
+                                           "Both (Ensemble)", "LSTM"])
+    forecast_horizon = st.slider("Forecast Horizon (weeks)", 4, 52, 12)
+    confidence = st.slider("Confidence Interval (%)", 80, 99, 95)
+
+    st.markdown("---")
+    st.subheader("🌤️ Weather Integration")
+    weather_enabled = st.checkbox("Include Weather Data", value=True)
+
+    WEATHER_REGIONS = {
+        "US Midwest (Corn/Soybeans)": (41.5, -93.6),
+        "US Gulf Coast (Oil)": (29.7, -95.4),
+        "Middle East (Oil)": (24.0, 54.0),
+        "Brazil (Soybeans)": (-15.8, -47.9),
+        "Australia (Wheat)": (-25.3, 131.0),
+        "Russia (Wheat)": (55.7, 37.6),
+    }
+    weather_region = st.selectbox("Weather Region", list(WEATHER_REGIONS.keys()))
+    weather_lat, weather_lon = WEATHER_REGIONS[weather_region]
+
+    # USDA crop reports (grains only; read from the committed NASS snapshot)
+    usda_enabled = False
+    if commodity_ticker in AG_TICKERS:
+        usda_enabled = st.checkbox("Include USDA Data", value=True,
+                                   help="NASS Quick Stats national yield estimates")
+
+    st.markdown("---")
+    st.subheader("⚡ Scenario Adjustments")
+    weather_multiplier = st.slider(
+        "Extreme Weather Impact Multiplier", 0.5, 3.0, 1.0, step=0.1
+    )
+    supply_shock = st.slider("Supply Shock (%)", -30, 30, 0)
+    demand_shock = st.slider("Demand Shock (%)", -30, 30, 0)
+
+    run_btn = st.button("🚀 Run Forecast", type="primary",
+                        use_container_width=True)
+    
+    st.sidebar.caption("Data cached for 1 hour")
+    if st.sidebar.button("🔄 Clear Data Cache"):
+       st.cache_data.clear()
+       st.rerun()
+# Header
+st.markdown(
+    f"""
+    <div class="commodity-hero">
+      <small>Commodity Forecasting Research</small>
+      <h1>{commodity_name} Research Lab</h1>
+      <p>
+        Statistical forecasting, rolling-origin benchmark validation, uncertainty,
+        weather context, decomposition, scenario shocks, and producer-risk analytics.
+      </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+@st.fragment(run_every="60s")
+def live_ticker_banner():
+    """Re-runs on its own every 60 s; turning the toggle off removes it on the next app run."""
+    quotes = fetch_quotes(COMMODITIES)
+    if not quotes:
+        st.caption("Live quotes unavailable right now.")
+        return
+    st.markdown(banner_html(quotes, COMMODITIES), unsafe_allow_html=True)
+    newest = max(q["as_of"] for q in quotes.values())
+    st.caption(
+        f"Yahoo Finance quotes (delayed), latest print {newest:%Y-%m-%d %H:%M %Z}; "
+        "change vs previous session close. Refreshes every 60 s."
+    )
+
+
+if live_ticker:
+    live_ticker_banner()
+
+tabs = st.tabs([
+    "Market Overview",
+    "Forecast",
+    "Forecast Validation",
+    "Weather Context",
+    "Decomposition",
+    "Risk Dashboard",
+    "Backtest",
+    "Correlations",
+])
+
+# Data
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_all_data(ticker, start, end, lat, lon, include_weather):
+    prices = fetch_commodity_prices(ticker, str(start), str(end))
+    weather = None
+    if include_weather and prices is not None:
+        w_start = str(prices.index[0].date())
+        w_end = str(prices.index[-1].date())
+        weather = fetch_weather_data(lat, lon, w_start, w_end)
+    return prices, weather
+
+
+if not run_btn:
+    with tabs[0]:
+        st.info("👈 Select a commodity and configure settings in the sidebar, "
+                "then click **Run Forecast**.")
+        st.markdown("""
+        ### Available Models
+
+        | Model | Description |
+        |-------|-------------|
+        | **Auto-ARIMA** | Selects an ARIMA order by AIC on the training prefix when `pmdarima` is installed. Seasonal terms are included only when the history is long enough. Otherwise the fit falls back to ARIMA(1, 1, 1). No exogenous regressors are used. |
+        | **Prophet** | Prophet trend and seasonality with an uncertainty interval |
+        | **LSTM** | PyTorch LSTM on standardised weekly log returns (52-week window, 32 units, dropout 0.2, 150 epochs, seed 0). Holdout scored like ARIMA; intervals are approximate (residual spread × √h). |
+        | **Ensemble** | Average of the ARIMA and Prophet paths when both models fit. The average is not a separately validated model. |
+
+        ### Data Sources
+        - **Commodity Prices**: Yahoo Finance via `yfinance` (futures contracts)
+        - **Weather Data**: Open-Meteo historical weather API (free, no key required)
+        """)
+    st.stop()
+
+with st.spinner(f"Loading {commodity_name} data…"):
+    prices, weather_df = load_all_data(
+        commodity_ticker, start_date, end_date,
+        weather_lat, weather_lon, weather_enabled,
+    )
+
+if prices is None or prices.empty:
+    st.error("Could not fetch commodity data. Check your ticker and date range.")
+    st.stop()
+
+# Regular weekly grid. Empty weeks keep their place and carry the last print
+# forward; backfilling would leak a later price into an earlier week.
+weekly = weekly_last(prices)
+returns = weekly.pct_change().dropna()
+
+# Overview
+with tabs[0]:
+    st.subheader(f"📋 {commodity_name} Price History")
+
+    current_price = prices.iloc[-1]
+    start_price = prices.iloc[0]
+    total_return = (current_price / start_price - 1) * 100
+    ann_vol = returns.std() * np.sqrt(52) * 100
+    trailing = trailing_high_low(prices, weeks=52)
+    high_label = "52-week High" if trailing["complete_window"] else "Sample High"
+    low_label = "52-week Low" if trailing["complete_window"] else "Sample Low"
+
+    c1, c2, c3, c4, c5 = st.columns(5)  # wraps to 3 + 2 below 1024px (CSS above)
+    c1.metric("Current Price", f"${current_price:.2f}")
+    c2.metric("Total Return", f"{total_return:+.1f}%")
+    c3.metric("Ann. Volatility", f"{ann_vol:.1f}%")
+    c4.metric(high_label, f"${trailing['high']:.2f}")
+    c5.metric(low_label, f"${trailing['low']:.2f}")
+
+    fig_main = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                              row_heights=[0.75, 0.25],
+                              subplot_titles=[f"{commodity_name} Price ($)",
+                                             "Weekly Returns (%)"])
+    fig_main.add_trace(
+        go.Scatter(x=weekly.index, y=weekly.values, name="Price",
+                   line=dict(color="#10B981", width=2),
+                   fill="tozeroy", fillcolor="rgba(16,185,129,0.1)"),
+        row=1, col=1,
+    )
+    colors = ["green" if r >= 0 else "red" for r in returns.values]
+    fig_main.add_trace(
+        go.Bar(x=returns.index, y=returns.values * 100, name="Returns",
+               marker_color=colors, opacity=0.7),
+        row=2, col=1,
+    )
+    fig_main.update_layout(template="plotly_dark", height=500,
+                            showlegend=False)
+    st.plotly_chart(fig_main, use_container_width=True)
+
+    st.subheader("📊 Descriptive Statistics")
+    stats = {
+        "Statistic": ["Mean Price", "Median Price", "Std Dev", "Skewness",
+                      "Kurtosis", "Min", "Max", "Current"],
+        "Value": [
+            f"${weekly.mean():.2f}",
+            f"${weekly.median():.2f}",
+            f"${weekly.std():.2f}",
+            f"{weekly.skew():.3f}",
+            f"{weekly.kurtosis():.3f}",
+            f"${weekly.min():.2f}",
+            f"${weekly.max():.2f}",
+            f"${weekly.iloc[-1]:.2f}",
+        ],
+    }
+    st.dataframe(pd.DataFrame(stats), use_container_width=True,
+                 hide_index=True)
+
+# Forecast
+with tabs[1]:
+    st.subheader(f"🔮 {forecast_horizon}-Week Price Forecast")
+
+    # Shocks scale the published forecast path only. Fitting and the holdout
+    # score stay on observed prices.
+    scenario_multiplier = (
+        (1 + supply_shock / 100) *
+        (1 + demand_shock / 100) *
+        weather_multiplier
+    )
+
+    alpha = 1 - confidence / 100
+    arima_result, prophet_result, lstm_result = None, None, None
+
+    if model_choice in ["Auto-ARIMA", "Both (Ensemble)"]:
+        with st.spinner("Fitting Auto-ARIMA model…"):
+            arima_result = fit_best_arima(
+                weekly, forecast_horizon, alpha=alpha
+            )
+        if arima_result is None:
+            st.warning(
+                "Auto-ARIMA could not be fit on this sample. "
+                "A longer weekly history is required."
+            )
+
+    if model_choice in ["Prophet", "Both (Ensemble)"]:
+        with st.spinner("Fitting Prophet model…"):
+            prophet_result = fit_prophet(
+                weekly, forecast_horizon, interval_width=confidence / 100
+            )
+        if prophet_result is None:
+            st.warning(
+                "Prophet could not be fit on this sample "
+                "(it may be unavailable, or the history may be too short)."
+            )
+
+    if model_choice == "LSTM":
+        with st.spinner("Training LSTM (CPU)…"):
+            lstm_result = fit_lstm(weekly, forecast_horizon, alpha=alpha)
+        if lstm_result is None:
+            st.warning(
+                "The LSTM could not be fit (torch may be missing, or the history is "
+                "shorter than the 52-week window plus training data)."
+            )
+
+    display_arima = arima_result
+    display_prophet = prophet_result
+    display_lstm = lstm_result
+    if scenario_multiplier != 1.0:
+        if arima_result is not None:
+            display_arima = {
+                **arima_result,
+                "forecast_df": apply_price_scenario(
+                    arima_result["forecast_df"], scenario_multiplier
+                ),
+            }
+        if prophet_result is not None:
+            display_prophet = {
+                **prophet_result,
+                "forecast_df": apply_price_scenario(
+                    prophet_result["forecast_df"], scenario_multiplier
+                ),
+            }
+        if lstm_result is not None:
+            display_lstm = {
+                **lstm_result,
+                "forecast_df": apply_price_scenario(
+                    lstm_result["forecast_df"], scenario_multiplier
+                ),
+            }
+
+    if arima_result:
+        m = arima_result["metrics"]
+        if arima_result.get("selection") == "fixed":
+            st.caption(
+                "Auto-ARIMA was unavailable, so this fit is ARIMA(1, 1, 1)."
+            )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("ARIMA MAE", f"{m['MAE']:.2f}")
+        c2.metric("ARIMA RMSE", f"{m['RMSE']:.2f}")
+        c3.metric("ARIMA MAPE", format_mape(m["MAPE"]))
+        c4.metric("ARIMA AIC", f"{m.get('AIC', 0):.1f}")
+
+    if prophet_result:
+        m = prophet_result["metrics"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Prophet MAE", f"{m['MAE']:.2f}")
+        c2.metric("Prophet RMSE", f"{m['RMSE']:.2f}")
+        c3.metric("Prophet MAPE", format_mape(m["MAPE"]))
+
+    if lstm_result:
+        m = lstm_result["metrics"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("LSTM MAE", f"{m['MAE']:.2f}")
+        c2.metric("LSTM RMSE", f"{m['RMSE']:.2f}")
+        c3.metric("LSTM MAPE", format_mape(m["MAPE"]))
+
+    st.caption(
+        "Holdout score: one multi-step forecast from a single origin at 85% "
+        "of the sample, then the model is refit on the full sample for the "
+        "path below. These numbers are not the one-step rolling-origin "
+        "leaderboard, and the scenario sliders do not enter the score."
+    )
+
+    st.markdown("---")
+
+    fig_fc = plot_forecast(
+        weekly, display_arima, display_prophet, commodity_name,
+        confidence_level=confidence, lstm_result=display_lstm,
+    )
+    st.plotly_chart(fig_fc, use_container_width=True)
+
+    if scenario_multiplier != 1.0:
+        st.info(
+            f"⚡ Scenario applied to the forecast path only "
+            f"(history and holdout scores stay on observed prices): "
+            f"Supply {supply_shock:+}% | "
+            f"Demand {demand_shock:+}% | "
+            f"Weather multiplier {weather_multiplier:.1f}x  →  "
+            f"Net price adjustment: **{(scenario_multiplier - 1)*100:+.1f}%**"
+        )
+
+    st.subheader("📋 Forecast Values Table")
+    fc_df = forecast_export_frame(display_arima, display_prophet, confidence, display_lstm)
+    if fc_df is not None:
+        fc_df = fc_df.copy()
+        fc_df.index = fc_df.index.strftime("%Y-%m-%d")
+        fc_df = fc_df.round(2)
+        st.dataframe(fc_df, use_container_width=True)
+        csv_str = fc_df.reset_index().to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download Forecast CSV",
+            data=csv_str,
+            file_name=f"{commodity_name}_forecast.csv",
+            mime="text/csv",
+        )
+
+# Forecast Validation
+with tabs[2]:
+    st.subheader("Rolling-Origin Baseline Validation")
+    st.caption(
+        "One-step baselines are scored at every remaining week. The forecast "
+        "horizon does not change this sample. Each forecast uses only "
+        "observations from before that week. These simple models are the floor "
+        "a more complicated forecast still has to beat on a common design."
+    )
+
+    initial_train_size = max(12, min(len(weekly) - 2, max(52, int(len(weekly) * 0.60))))
+    if initial_train_size >= len(weekly):
+        st.info("More weekly history is required for rolling-origin validation.")
+    else:
+        try:
+            validation_predictions, validation_table = (
+                rolling_origin_baseline_backtest(
+                    weekly,
+                    initial_train_size=initial_train_size,
+                    step=1,
+                    season_length=52,
+                )
+            )
+
+            v1, v2, v3, v4 = st.columns(4)
+            best_row = validation_table.iloc[0]
+            v1.metric("Best baseline", str(best_row["Model"]))
+            v2.metric("Best MASE", f'{best_row["MASE"]:.3f}')
+            v3.metric("Best RMSE", f'{best_row["RMSE"]:.2f}')
+            v4.metric(
+                "Directional accuracy",
+                format_directional_accuracy(best_row["Directional Accuracy"]),
+            )
+
+            st.markdown("#### Baseline leaderboard")
+            display_table = validation_table.copy()
+            display_table["Directional Accuracy"] = display_table[
+                "Directional Accuracy"
+            ].map(format_directional_accuracy)
+            st.dataframe(
+                display_table.style.format(
+                    {
+                        "MAE": "{:.2f}",
+                        "RMSE": "{:.2f}",
+                        "MAPE (%)": "{:.2f}",
+                        "sMAPE (%)": "{:.2f}",
+                        "MASE": "{:.3f}",
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+            report_md = validation_report_markdown(
+                commodity=commodity_name, ticker=commodity_ticker,
+                start=start_date, end=end_date,
+                generated_at=pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M UTC"),
+                settings={"Initial training weeks": initial_train_size, "Step": "1 week",
+                          "Season length": 52, "Origins": int(validation_predictions["date"].nunique())},
+                table=validation_table,
+            )
+            d1, d2 = st.columns(2)
+            d1.download_button("⬇️ Validation report (Markdown)", report_md,
+                               file_name=f"validation_{commodity_ticker}.md", mime="text/markdown",
+                               use_container_width=True, on_click="ignore")
+            d2.download_button("⬇️ Out-of-sample forecasts (CSV)",
+                               predictions_csv(validation_predictions),
+                               file_name=f"validation_forecasts_{commodity_ticker}.csv",
+                               mime="text/csv", use_container_width=True, on_click="ignore")
+
+            comparison = validation_predictions.pivot(
+                index="date",
+                columns="model",
+                values="predicted",
+            )
+            actual = (
+                validation_predictions[["date", "actual"]]
+                .drop_duplicates("date")
+                .set_index("date")
+            )
+            comparison = actual.join(comparison)
+            comparison.columns.name = None
+
+            validation_fig = go.Figure()
+            validation_fig.add_trace(
+                go.Scatter(
+                    x=comparison.index,
+                    y=comparison["actual"],
+                    name="Actual",
+                    line=dict(color="#E5E7EB", width=3),
+                )
+            )
+            palette = {
+                "Last Value": "#10B981",
+                "Drift": "#60A5FA",
+                "Seasonal Naive": "#F59E0B",
+            }
+            for model in ["Last Value", "Drift", "Seasonal Naive"]:
+                if model in comparison:
+                    validation_fig.add_trace(
+                        go.Scatter(
+                            x=comparison.index,
+                            y=comparison[model],
+                            name=model,
+                            line=dict(
+                                color=palette[model],
+                                width=1.6,
+                                dash="dot",
+                            ),
+                        )
+                    )
+            validation_fig.update_layout(
+                title="Rolling-Origin Baseline Forecasts",
+                height=450,
+                paper_bgcolor="#111827",
+                plot_bgcolor="#111827",
+                font=dict(color="#E5E7EB"),
+                xaxis=dict(title="", gridcolor="#1F2937"),
+                yaxis=dict(title="Price", gridcolor="#1F2937"),
+                legend=dict(orientation="h", y=-0.16),
+                margin=dict(l=55, r=25, t=65, b=70),
+            )
+            st.plotly_chart(validation_fig, use_container_width=True)
+
+            st.info(
+                "**Interpretation:** MASE below 1.0 means a forecast improves on "
+                "the in-sample one-step naïve error scale. Sophisticated models "
+                "should be compared with these baselines on a common evaluation design."
+            )
+        except ValueError as exc:
+            st.warning(f"Validation unavailable: {exc}")
+
+
+# Weather Overlay
+with tabs[3]:
+    st.subheader(f"🌤️ Weather Overlay — {weather_region}")
+
+    if weather_df is not None and not weather_df.empty:
+        fig_weather = plot_weather_overlay(weekly, weather_df, commodity_name,
+                                           weather_region)
+        st.plotly_chart(fig_weather, use_container_width=True)
+
+        st.subheader("📊 Weather and weekly price returns")
+        st.caption(
+            "Same-week association between price returns and weather, on exact "
+            "shared dates. Price levels are omitted because a shared trend is "
+            "not evidence of a relationship. This is not a lagged predictive feature."
+        )
+        corr_df = weather_price_frame(weekly, weather_df)
+        if len(corr_df) > 10:
+            corr_matrix = corr_df.corr()
+            fig_corr = go.Figure(go.Heatmap(
+                z=corr_matrix.values,
+                x=corr_matrix.columns.tolist(),
+                y=corr_matrix.index.tolist(),
+                colorscale="RdBu", zmin=-1, zmax=1,
+                text=corr_matrix.round(2).values,
+                texttemplate="%{text:.2f}",
+            ))
+            fig_corr.update_layout(
+                title=f"Return vs weather association — {weather_region}",
+                template="plotly_dark", height=350,
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
+    else:
+        st.warning(
+            "Weather data unavailable (API may be unreachable or dates out of "
+            "range). The forecast still runs without weather features."
+        )
+        simulated = simulate_weather_data(str(start_date), str(end_date), seed=42)
+        dates = simulated.index
+        temp_sim = simulated["temperature_mean"]
+        precip_sim = simulated["precipitation_sum"]
+
+        fig_sim = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                 subplot_titles=["Temperature (°C)",
+                                                 "Precipitation (mm)"])
+        fig_sim.add_trace(go.Scatter(x=dates, y=temp_sim, name="Temp",
+                                      line=dict(color="orange")), row=1, col=1)
+        fig_sim.add_trace(go.Bar(x=dates, y=precip_sim, name="Precip",
+                                  marker_color="steelblue"), row=2, col=1)
+        fig_sim.update_layout(template="plotly_dark", height=400,
+                               title="Simulated Weather Data (example)")
+        st.plotly_chart(fig_sim, use_container_width=True)
+
+    if usda_enabled:
+        st.subheader("🌽 USDA NASS yield estimates")
+        usda_cache = load_cache()
+        releases = yield_releases(usda_cache["records"][commodity_ticker])
+        releases = releases[releases["released"] <= pd.Timestamp.today()]
+        fig_usda = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_usda.add_trace(go.Scatter(x=weekly.index, y=weekly.values, name="Weekly close",
+                                      line=dict(color="#E5E7EB")), secondary_y=False)
+        fig_usda.add_trace(go.Scatter(x=releases["released"], y=releases["yield"],
+                                      name="Yield estimate (BU/ACRE)", mode="lines+markers",
+                                      line=dict(color="#10B981", shape="hv")),
+                           secondary_y=True)
+        fig_usda.update_layout(template="plotly_dark", height=380,
+                               title=f"{commodity_name}: price vs USDA yield estimates")
+        st.plotly_chart(fig_usda, use_container_width=True)
+        st.caption(f"Source: USDA NASS Quick Stats, snapshot pulled "
+                   f"{usda_cache['downloaded_on']} (data/usda_cache.json). Report dates "
+                   "are approximated as the 12th of the release month.")
+
+# Decomposition
+with tabs[4]:
+    st.subheader("🔬 Time-Series Decomposition")
+    st.caption("Seasonal-Trend Decomposition using LOESS (STL)")
+
+    with st.spinner("Decomposing time series…"):
+        decomp = decompose_series(weekly)
+
+    if decomp is not None:
+        fig_decomp = plot_decomposition(decomp, commodity_name)
+        st.plotly_chart(fig_decomp, use_container_width=True)
+
+        strength = decomposition_strength(decomp)
+        seasonal_strength = strength["seasonal_strength"]
+        trend_strength = strength["trend_strength"]
+        st.subheader("📊 Decomposition Insights")
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            "Seasonal Strength",
+            "n/a" if seasonal_strength is None else f"{seasonal_strength:.3f}",
+            help="Hyndman strength: max(0, 1 - Var(remainder) / Var(seasonal + remainder))",
+        )
+        col2.metric(
+            "Trend Strength",
+            "n/a" if trend_strength is None else f"{trend_strength:.3f}",
+            help="Hyndman strength: max(0, 1 - Var(remainder) / Var(trend + remainder))",
+        )
+        col3.metric("Residual Std",
+                    f"${decomp.resid.dropna().std():.2f}")
+    else:
+        st.warning("Decomposition requires at least 2 full seasonal periods "
+                   "(104 weeks for annual seasonality).")
+
+# Risk Dashboard
+with tabs[5]:
+    st.subheader("⚠️ Producer & Supplier Risk Dashboard")
+    st.caption(
+        "Volatility, drawdown, and trend scores are commodity-level and use "
+        "the last 52 weeks. They are the same for every producer. The "
+        "geopolitical column is a deterministic illustrative prior, not an "
+        "estimated country risk. **Not a credit rating.**"
+    )
+
+    risk_table = compute_risk_scores(prices, commodity_name)
+
+    col_left, col_right = st.columns([3, 2])
+
+    with col_left:
+        fig_heat = risk_heatmap(risk_table)
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+    with col_right:
+        st.subheader("Risk Score Table")
+        st.dataframe(
+            risk_table.style.background_gradient(
+                cmap="RdYlGn_r",
+                subset=["Overall Risk Score"]
+            ),
+            use_container_width=True,
+            height=360,
+        )
+
+    st.markdown("---")
+    rolling_vol = returns.rolling(12).std() * np.sqrt(52) * 100
+    fig_vol = go.Figure()
+    fig_vol.add_trace(go.Scatter(
+        x=rolling_vol.index, y=rolling_vol.values,
+        name="12-week Rolling Volatility",
+        line=dict(color="orange", width=2),
+        fill="tozeroy", fillcolor="rgba(255,165,0,0.1)",
+    ))
+    fig_vol.update_layout(
+        title="Rolling 12-Week Annualised Volatility (%)",
+        xaxis_title="Date", yaxis_title="Volatility (%)",
+        template="plotly_dark", height=350,
+    )
+    st.plotly_chart(fig_vol, use_container_width=True)
+
+    with st.expander("ℹ️ How risk scores are calculated"):
+        st.markdown("""
+        | Component | Weight | Description |
+        |-----------|--------|-------------|
+        | **Price Volatility** | 35% | Annualised standard deviation of the last 52 weekly returns |
+        | **Max Drawdown** | 25% | Largest peak-to-trough loss of a wealth index starting at 1, over those same weeks |
+        | **Trend Instability** | 20% | Moving-average crossover rate over the last 52 weeks |
+        | **Geopolitical prior** | 20% | Deterministic illustrative prior by commodity and region, not estimated risk |
+
+        Scores range from 0 (lowest risk) to 100 (highest risk). The overall score is a weighted average.
+        """)
+
+
+# Walk-Forward Backtest
+with tabs[6]:
+    st.subheader("🔁 Walk-forward backtest: ARIMA(1,1,1)")
+    st.caption(
+        "Expanding window. At each origin the model is refit on data up to that week "
+        "only, forecasts the next weeks, and the origin moves forward. Every point "
+        "below is out of sample. A fixed order keeps refits fast and avoids "
+        "re-selecting the order on future data."
+    )
+    b1, b2, b3 = st.columns(3)
+    bt_horizon = b1.slider("Horizon (weeks)", 1, 12, 4, key="bt_h")
+    bt_step = b2.slider("Step between origins (weeks)", 1, 12, 4, key="bt_s")
+    bt_init = b3.slider("Initial training weeks", 52, 156, 104, step=4, key="bt_i")
+    bt_series = weekly.dropna()
+    if len(bt_series) <= bt_init + bt_horizon:
+        st.info("Select a longer date range: the series is shorter than the initial window.")
+    else:
+        with st.spinner("Running walk-forward backtest…"):
+            bt = walk_forward_backtest(
+                bt_series,
+                arima_model_fn(horizon=bt_horizon, alpha=1 - confidence / 100),
+                initial_train_size=bt_init,
+                step_size=bt_step,
+                horizon=bt_horizon,
+            )
+        summ = bt["summary"]
+        st.download_button("⬇️ Backtest forecasts (CSV)", predictions_csv(bt["predictions"]),
+                           file_name=f"backtest_{commodity_ticker}.csv", mime="text/csv",
+                           on_click="ignore")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Mean MAE", f"${summ['mean_MAE']:.2f}")
+        m2.metric("Mean RMSE", f"${summ['mean_RMSE']:.2f}")
+        m3.metric("Mean MAPE", f"{summ['mean_MAPE']:.2f}%")
+        m4.metric(f"{confidence}% interval hit rate", f"{summ['hit_rate'] * 100:.1f}%")
+        pred = bt["predictions"]
+        fig_bt = go.Figure()
+        fig_bt.add_trace(go.Scatter(x=bt_series.index, y=bt_series.values, name="Actual",
+                                    line=dict(color="#94A3B8")))
+        for i, (_, g) in enumerate(pred.groupby("origin")):
+            fig_bt.add_trace(go.Scatter(x=g["date"], y=g["forecast"], mode="lines",
+                                        line=dict(color="#10B981", width=1.4),
+                                        name="Out-of-sample forecast", legendgroup="fc",
+                                        showlegend=i == 0))
+        fig_bt.update_layout(template="plotly_dark", height=420,
+                             title="Actual vs every out-of-sample forecast")
+        st.plotly_chart(fig_bt, use_container_width=True)
+        by_o = bt["by_origin"]
+        fig_mape = go.Figure(go.Scatter(x=by_o.index, y=by_o["MAPE"], mode="lines+markers",
+                                        line=dict(color="#F59E0B")))
+        fig_mape.update_layout(template="plotly_dark", height=320,
+                               title="MAPE by forecast origin (%)")
+        st.plotly_chart(fig_mape, use_container_width=True)
+        st.dataframe(
+            pd.DataFrame({
+                "Origins": [summ["n_origins"]],
+                "Forecasts scored": [summ["n_predictions"]],
+                "Failed fits": [summ["n_failed_origins"]],
+                "Mean MAE": [round(summ["mean_MAE"], 3)],
+                "Mean RMSE": [round(summ["mean_RMSE"], 3)],
+                "Mean MAPE (%)": [round(summ["mean_MAPE"], 3)],
+                "Hit rate (%)": [round(summ["hit_rate"] * 100, 1)],
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
+
+# Cross-Commodity Correlations
+with tabs[7]:
+    st.subheader("🔗 Cross-commodity correlations")
+    if not compare_names:
+        st.info("Pick one or more commodities under **Compare with** in the sidebar.")
+    else:
+        selected = {commodity_name: commodity_ticker, **{n: COMMODITIES[n] for n in compare_names}}
+        with st.spinner("Loading comparison series in parallel…"):
+            loaded = fetch_many(selected, str(start_date), str(end_date))
+        if len(loaded) < 2:
+            st.warning("Fewer than two series loaded; nothing to compare.")
+        else:
+            panel = align_weekly(loaded)
+            st.caption(
+                f"{len(panel)} shared weeks, {panel.index[0].date()} to {panel.index[-1].date()}. "
+                "Correlations use weekly returns, not price levels."
+            )
+            fig_norm = go.Figure()
+            for col, series in normalized(panel).items():
+                fig_norm.add_trace(go.Scatter(x=series.index, y=series.values, name=col))
+            fig_norm.update_layout(template="plotly_dark", height=380,
+                                   title="Normalised price (first shared week = 100)")
+            st.plotly_chart(fig_norm, use_container_width=True)
+
+            corr = return_correlation(panel)
+            fig_cm = go.Figure(go.Heatmap(
+                z=corr.values, x=corr.columns.tolist(), y=corr.index.tolist(),
+                colorscale="RdBu", zmin=-1, zmax=1,
+                text=corr.round(2).values, texttemplate="%{text:.2f}",
+            ))
+            fig_cm.update_layout(template="plotly_dark", height=380,
+                                 title="Correlation of weekly returns")
+            st.plotly_chart(fig_cm, use_container_width=True)
+
+            cols = list(panel.columns)
+            pa, pb = st.columns(2)
+            a_name = pa.selectbox("Series A", cols, index=0, key="corr_a")
+            b_name = pb.selectbox("Series B", [c for c in cols if c != a_name], index=0, key="corr_b")
+            roll = rolling_correlation(panel, a_name, b_name, window=12)
+            fig_roll = go.Figure(go.Scatter(x=roll.index, y=roll.values, line=dict(color="#10B981")))
+            fig_roll.update_layout(template="plotly_dark", height=320, yaxis_range=[-1, 1],
+                                   title=f"Rolling 12-week return correlation: {a_name} vs {b_name}")
+            st.plotly_chart(fig_roll, use_container_width=True)
+
+            bands = spread_bands(panel, a_name, b_name)
+            fig_sp = go.Figure()
+            fig_sp.add_trace(go.Scatter(x=bands.index, y=bands["ratio"], name=f"{a_name} / {b_name}",
+                                        line=dict(color="#E5E7EB")))
+            for col, colour, dash in [("mean", "#10B981", "solid"), ("+1σ", "#F59E0B", "dash"),
+                                      ("-1σ", "#F59E0B", "dash"), ("+2σ", "#EF4444", "dot"),
+                                      ("-2σ", "#EF4444", "dot")]:
+                fig_sp.add_trace(go.Scatter(x=bands.index, y=bands[col], name=col,
+                                            line=dict(color=colour, dash=dash, width=1)))
+            fig_sp.update_layout(template="plotly_dark", height=360,
+                                 title="Price ratio with full-sample mean ±1σ / ±2σ bands")
+            st.plotly_chart(fig_sp, use_container_width=True)
+            st.caption("Bands use the whole selected sample, so they describe the period "
+                       "and are not a tradable signal.")
+
+st.markdown("---")
+st.caption(
+    "⚠️ **Disclaimer**: Forecasts and risk scores are for educational and "
+    "simulation purposes only. They do not constitute financial, commodity, "
+    "or investment advice. Forecast accuracy is not guaranteed. "
+    "Data sourced from Yahoo Finance and Open-Meteo."
+)

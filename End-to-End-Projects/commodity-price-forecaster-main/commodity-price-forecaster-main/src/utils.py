@@ -1,0 +1,240 @@
+"""Plotly charts for the dashboard. Risk scores live in ``src.market``."""
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from typing import Optional
+
+from src.market import compute_risk_scores
+
+
+def plot_forecast(
+    historical: pd.Series,
+    arima_result: Optional[dict],
+    prophet_result: Optional[dict],
+    commodity_name: str,
+    confidence_level: int = 95,
+    history_weeks: int = 104,
+    lstm_result: Optional[dict] = None,
+) -> go.Figure:
+    """History plus whichever of ARIMA, Prophet, and LSTM returned a forecast."""
+    fig = go.Figure()
+
+    hist = historical.iloc[-history_weeks:]
+    fig.add_trace(go.Scatter(
+        x=hist.index, y=hist.values,
+        name="Historical Price",
+        line=dict(color="#10B981", width=2),
+    ))
+
+    # ARIMA forecast
+    if arima_result:
+        fc_df = arima_result["forecast_df"]
+        fig.add_trace(go.Scatter(
+            x=fc_df.index, y=fc_df["forecast"],
+            name="ARIMA Forecast",
+            line=dict(color="#EF553B", width=2, dash="dash"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=fc_df.index.tolist() + fc_df.index.tolist()[::-1],
+            y=fc_df["upper"].tolist() + fc_df["lower"].tolist()[::-1],
+            fill="toself",
+            fillcolor="rgba(239,85,59,0.15)",
+            line=dict(color="rgba(255,255,255,0)"),
+            name=f"ARIMA {confidence_level}% CI",
+            showlegend=True,
+        ))
+
+        # Show test-period fit if available
+        if "test" in arima_result and "test_pred" in arima_result:
+            test_series = arima_result["test"]
+            test_pred = np.asarray(arima_result["test_pred"]).flatten()
+            test_idx = (test_series.index if hasattr(test_series, "index")
+                        else pd.RangeIndex(len(test_pred)))
+            fig.add_trace(go.Scatter(
+                x=test_idx, y=test_pred,
+                name="ARIMA holdout forecast",
+                line=dict(color="#EF553B", width=1, dash="dot"),
+                opacity=0.6,
+            ))
+
+    # LSTM forecast
+    if lstm_result:
+        fc_df = lstm_result["forecast_df"]
+        fig.add_trace(go.Scatter(
+            x=fc_df.index, y=fc_df["forecast"],
+            name="LSTM Forecast",
+            line=dict(color="#A78BFA", width=2, dash="dash"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=fc_df.index.tolist() + fc_df.index.tolist()[::-1],
+            y=fc_df["upper"].tolist() + fc_df["lower"].tolist()[::-1],
+            fill="toself",
+            fillcolor="rgba(167,139,250,0.15)",
+            line=dict(color="rgba(255,255,255,0)"),
+            name=f"LSTM {confidence_level}% band (approx.)",
+            showlegend=True,
+        ))
+        if "test" in lstm_result and "test_pred" in lstm_result:
+            fig.add_trace(go.Scatter(
+                x=lstm_result["test"].index, y=np.asarray(lstm_result["test_pred"]).flatten(),
+                name="LSTM holdout forecast",
+                line=dict(color="#A78BFA", width=1, dash="dot"),
+                opacity=0.6,
+            ))
+
+    # Prophet forecast
+    if prophet_result:
+        fc_df = prophet_result["forecast_df"]
+        fig.add_trace(go.Scatter(
+            x=fc_df.index, y=fc_df["forecast"],
+            name="Prophet Forecast",
+            line=dict(color="#00CC96", width=2, dash="dash"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=fc_df.index.tolist() + fc_df.index.tolist()[::-1],
+            y=fc_df["upper"].tolist() + fc_df["lower"].tolist()[::-1],
+            fill="toself",
+            fillcolor="rgba(0,204,150,0.15)",
+            line=dict(color="rgba(255,255,255,0)"),
+            name=f"Prophet {confidence_level}% CI",
+            showlegend=True,
+        ))
+
+    # Ensemble (average of both if both present)
+    if arima_result and prophet_result:
+        a_fc = arima_result["forecast_df"]
+        p_fc = prophet_result["forecast_df"]
+        common_idx = a_fc.index.intersection(p_fc.index)
+        if len(common_idx) > 0:
+            ensemble = (a_fc.loc[common_idx, "forecast"] +
+                        p_fc.loc[common_idx, "forecast"]) / 2
+            fig.add_trace(go.Scatter(
+                x=common_idx, y=ensemble.values,
+                name="Ensemble (Avg)",
+                line=dict(color="white", width=2.5),
+            ))
+
+    fig.update_layout(
+        title=f"{commodity_name} — Price Forecast",
+        xaxis_title="Date",
+        yaxis_title="Price ($)",
+        template="plotly_dark",
+        height=500,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right",
+                    x=1),
+        hovermode="x unified",
+    )
+    return fig
+
+
+def plot_decomposition(decomp, commodity_name: str) -> go.Figure:
+    """Observed, trend, seasonal, and residual. Accepts STL or seasonal_decompose output."""
+    observed = pd.Series(decomp.observed).dropna()
+    trend = pd.Series(decomp.trend).dropna()
+    seasonal = pd.Series(decomp.seasonal).dropna()
+    residual = pd.Series(decomp.resid).dropna()
+
+    fig = make_subplots(
+        rows=4, cols=1,
+        shared_xaxes=True,
+        subplot_titles=["Observed", "Trend", "Seasonal", "Residual"],
+        vertical_spacing=0.06,
+    )
+
+    for i, (data, color, name) in enumerate([
+        (observed, "#10B981", "Observed"),
+        (trend, "#EF553B", "Trend"),
+        (seasonal, "#00CC96", "Seasonal"),
+        (residual, "#AB63FA", "Residual"),
+    ], start=1):
+        fig.add_trace(
+            go.Scatter(x=data.index, y=data.values, name=name,
+                       line=dict(color=color, width=1.5),
+                       mode="lines"),
+            row=i, col=1,
+        )
+
+    fig.update_layout(
+        title=f"{commodity_name} — Seasonal Decomposition (STL)",
+        template="plotly_dark",
+        height=500,
+        showlegend=False,
+    )
+    return fig
+
+
+def plot_weather_overlay(
+    prices: pd.Series,
+    weather_df: pd.DataFrame,
+    commodity_name: str,
+    region_name: str,
+) -> go.Figure:
+    """Price, temperature, and precipitation on shared dates. No nearest-week match."""
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        subplot_titles=[
+            f"{commodity_name} Price ($)",
+            f"Temperature °C — {region_name}",
+            f"Precipitation mm — {region_name}",
+        ],
+        vertical_spacing=0.08,
+    )
+
+    fig.add_trace(go.Scatter(
+        x=prices.index, y=prices.values,
+        name="Price", line=dict(color="#10B981", width=2),
+    ), row=1, col=1)
+
+    # Exact dates only. method="nearest" can attach a later week to this week.
+    aligned_weather = weather_df.reindex(prices.index)
+
+    if "temperature_mean" in aligned_weather.columns:
+        temp = aligned_weather["temperature_mean"]
+        fig.add_trace(go.Scatter(
+            x=temp.index, y=temp.values,
+            name="Temp (°C)", line=dict(color="orange", width=1.5),
+        ), row=2, col=1)
+
+    if "precipitation_sum" in aligned_weather.columns:
+        precip = aligned_weather["precipitation_sum"]
+        fig.add_trace(go.Bar(
+            x=precip.index, y=precip.values,
+            name="Precip (mm)", marker_color="steelblue", opacity=0.7,
+        ), row=3, col=1)
+
+    fig.update_layout(
+        template="plotly_dark",
+        height=500,
+        showlegend=True,
+        title=f"{commodity_name} vs Weather — {region_name}",
+    )
+    return fig
+
+
+def risk_heatmap(risk_table: pd.DataFrame) -> go.Figure:
+    """Heatmap of ``compute_risk_scores`` output. The geopolitical column is a prior."""
+    score_cols = ["Volatility Score", "Drawdown Score",
+                  "Trend Score", "Geopolitical Score", "Overall Risk Score"]
+    present = [c for c in score_cols if c in risk_table.columns]
+    matrix = risk_table.set_index("Region / Producer")[present]
+
+    fig = go.Figure(go.Heatmap(
+        z=matrix.values,
+        x=matrix.columns.tolist(),
+        y=matrix.index.tolist(),
+        colorscale="RdYlGn_r",
+        zmin=0, zmax=100,
+        text=matrix.round(1).values,
+        texttemplate="%{text}",
+        colorbar=dict(title="Risk Score"),
+    ))
+    fig.update_layout(
+        title="Producer Risk Heatmap (0=Low, 100=High)",
+        template="plotly_dark",
+        height=380,
+    )
+    return fig

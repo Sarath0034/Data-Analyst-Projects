@@ -1,0 +1,149 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.formatting import format_directional_accuracy
+from src.validation import (
+    drift_forecast,
+    forecast_metrics,
+    last_value_forecast,
+    rolling_origin_baseline_backtest,
+    seasonal_naive_forecast,
+)
+
+
+@pytest.fixture
+def weekly_series():
+    index = pd.date_range("2022-01-02", periods=90, freq="W")
+    trend = np.linspace(100.0, 130.0, len(index))
+    seasonal = 4.0 * np.sin(np.arange(len(index)) * 2 * np.pi / 13)
+    return pd.Series(trend + seasonal, index=index)
+
+
+def test_last_value_repeats_latest_observation(weekly_series):
+    forecast = last_value_forecast(weekly_series.iloc[:20], horizon=3)
+    assert np.allclose(forecast, weekly_series.iloc[19])
+
+
+def test_drift_uses_only_training_endpoints():
+    train = pd.Series([10.0, 12.0, 14.0])
+    forecast = drift_forecast(train, horizon=2)
+    assert np.allclose(forecast, [16.0, 18.0])
+
+
+def test_seasonal_naive_uses_prior_cycle():
+    train = pd.Series(np.arange(1.0, 9.0))
+    forecast = seasonal_naive_forecast(train, horizon=2, season_length=4)
+    assert np.allclose(forecast, [5.0, 6.0])
+
+
+def test_mase_equals_one_for_naive_scale_error():
+    insample = np.array([10.0, 12.0, 14.0, 16.0])
+    metrics = forecast_metrics(
+        actual=[18.0, 20.0],
+        predicted=[16.0, 18.0],
+        insample=insample,
+        previous_actual=[16.0, 18.0],
+    )
+    assert metrics.mae == pytest.approx(2.0)
+    assert metrics.mase == pytest.approx(1.0)
+
+
+def test_rolling_origin_never_uses_future_data(weekly_series):
+    predictions, leaderboard = rolling_origin_baseline_backtest(
+        weekly_series,
+        initial_train_size=52,
+        step=4,
+        season_length=52,
+    )
+    assert not predictions.empty
+    assert set(leaderboard["Model"]) == {
+        "Last Value",
+        "Drift",
+        "Seasonal Naive",
+    }
+    assert predictions["date"].min() == weekly_series.index[52]
+    assert (leaderboard["Forecasts"] > 0).all()
+
+
+def test_flat_forecast_directional_accuracy_is_not_applicable():
+    """A forecast that never calls a direction is undefined, not 0%."""
+    metrics = forecast_metrics(
+        actual=[12.0, 9.0, 15.0],
+        predicted=[10.0, 12.0, 9.0],
+        insample=[8.0, 9.0, 10.0],
+        previous_actual=[10.0, 12.0, 9.0],
+    )
+    assert np.isnan(metrics.directional_accuracy)
+    assert format_directional_accuracy(metrics.directional_accuracy) == "n/a"
+    assert format_directional_accuracy(None) == "n/a"
+
+
+def test_last_value_baseline_does_not_report_zero_directional_accuracy():
+    index = pd.date_range("2023-01-01", periods=12, freq="W")
+    series = pd.Series(np.linspace(10.0, 21.0, len(index)), index=index)
+    _, leaderboard = rolling_origin_baseline_backtest(
+        series,
+        initial_train_size=5,
+        step=1,
+        season_length=52,
+    )
+    last_value = leaderboard.set_index("Model").loc["Last Value"]
+    assert np.isnan(last_value["Directional Accuracy"])
+    assert format_directional_accuracy(last_value["Directional Accuracy"]) == "n/a"
+    drift = leaderboard.set_index("Model").loc["Drift"]
+    assert np.isfinite(drift["Directional Accuracy"])
+    assert format_directional_accuracy(drift["Directional Accuracy"]) != "n/a"
+
+
+def test_rolling_origin_pins_known_errors_and_uses_only_the_prefix():
+    index = pd.date_range("2024-01-07", periods=5, freq="W")
+    series = pd.Series([10.0, 12.0, 11.0, 13.0, 12.0], index=index)
+    predictions, leaderboard = rolling_origin_baseline_backtest(
+        series,
+        initial_train_size=3,
+        step=1,
+        season_length=2,
+    )
+    scores = leaderboard.set_index("Model")
+
+    assert scores.loc["Last Value", "MAE"] == pytest.approx(1.5)
+    assert scores.loc["Last Value", "RMSE"] == pytest.approx(np.sqrt(2.5))
+    assert scores.loc["Last Value", "MASE"] == pytest.approx(1.0)
+    assert scores.loc["Drift", "MAE"] == pytest.approx(1.75)
+    assert scores.loc["Drift", "MASE"] == pytest.approx(1.75 / 1.5)
+    assert scores.loc["Drift", "Directional Accuracy"] == pytest.approx(0.5)
+    assert scores.loc["Seasonal Naive", "MAE"] == pytest.approx(1.0)
+    assert scores.loc["Seasonal Naive", "MASE"] == pytest.approx(1.0 / 1.5)
+    assert scores.loc["Seasonal Naive", "Directional Accuracy"] == pytest.approx(1.0)
+
+    for timestamp, group in predictions.groupby("date"):
+        train = series.iloc[: series.index.get_loc(timestamp)]
+        got = group.set_index("model")["predicted"]
+        assert got["Last Value"] == pytest.approx(last_value_forecast(train, 1)[0])
+        assert got["Drift"] == pytest.approx(drift_forecast(train, 1)[0])
+        assert got["Seasonal Naive"] == pytest.approx(
+            seasonal_naive_forecast(train, 1, season_length=2)[0]
+        )
+        assert train.index.max() < timestamp
+
+
+def test_directional_accuracy_rejects_non_finite_previous_actual():
+    with pytest.raises(ValueError, match="finite"):
+        forecast_metrics(
+            actual=[1.0, 2.0],
+            predicted=[1.0, 2.0],
+            insample=[1.0, 2.0, 3.0],
+            previous_actual=[1.0, np.nan],
+        )
+
+
+def test_directional_accuracy_is_bounded(weekly_series):
+    _, leaderboard = rolling_origin_baseline_backtest(
+        weekly_series,
+        initial_train_size=30,
+        step=2,
+        season_length=13,
+    )
+    values = leaderboard["Directional Accuracy"].dropna()
+    assert ((values >= 0.0) & (values <= 1.0)).all()
